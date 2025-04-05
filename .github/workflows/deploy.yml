@@ -1,0 +1,91 @@
+name: Deploy to ECS Fargate
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
+      TASK_FAMILY: ${{ secrets.TASK_DEFINITION_FAMILY }}
+      CONTAINER_NAME: ${{ secrets.CONTAINER_NAME }}
+      EXECUTION_ROLE_ARN: ${{ secrets.EXECUTION_ROLE_ARN }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag and push Docker image to ECR
+        run: |
+          IMAGE_TAG=$(date +%s)
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG 
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+        # create the docker image: 1234567890.dkr.ecr.us-east-1.amazonaws.com/medusa-backend:1712317021
+
+      #  Use AWS official ECS Deploy Action if possible
+      - name: Deploy to ECS 
+        id: deploy-ecs
+        continue-on-error: true # if fails, go to the alternate method
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ env.TASK_FAMILY }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          wait-for-service-stability: true
+
+      # 🔁 Fallback: Manual task definition registration and update if plugin fails
+      - name: Get current task definition (fallback)
+        if: steps.deploy-ecs.outcome == 'failure'
+        id: get-task-def
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $TASK_FAMILY \
+            --query "taskDefinition" > old-task-def.json
+
+      - name: Create new task definition (fallback)
+        if: steps.deploy-ecs.outcome == 'failure'
+        run: |
+          NEW_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          cat old-task-def.json | jq --arg IMAGE "$NEW_IMAGE" --arg NAME "$CONTAINER_NAME" \
+            '.containerDefinitions[].image = ($IMAGE) | .family = env.TASK_FAMILY | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            > new-task-def.json
+
+      - name: Register task definition (fallback)
+        if: steps.deploy-ecs.outcome == 'failure'
+        id: register-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-def.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+
+      - name: Update ECS service (fallback)
+        if: steps.deploy-ecs.outcome == 'failure'
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition $TASK_DEF_ARN \
+            --force-new-deployment

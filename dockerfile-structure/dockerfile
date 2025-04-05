@@ -1,13 +1,19 @@
-# Use Node.js 20 alpine as the base image
+# Template for the medusa backend to create an image.  
+
+# Use Node.js 20 alpine as the base image. Alpine images are lightweight which make the build faster. For production cases, multi stage build can also be used
+
 FROM node:20-alpine
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files. Since the original codebase has yarn.lock file, yarn package manager was used
 COPY package.json yarn.lock ./
 
+
+
 RUN yarn install --frozen-lockfile
+
 
 # Copy the rest of the application
 COPY . .

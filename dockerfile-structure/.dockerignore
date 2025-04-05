@@ -1,0 +1,3 @@
+#this is what gets skipped during docker image creation. For example node_modules, .env file are kept it here, which prevent them from getting absorbed into docker image.
+node_modules  #Not available now, just added for informational purposes
+.env   #Not available now, just added for informational purposes

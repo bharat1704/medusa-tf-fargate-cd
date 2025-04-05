@@ -1,7 +1,7 @@
 
 variable "account_id" {
   description = "AWS Account ID"
-  default     = "975050276645" # ←  actual AWS Account ID
+  default     = "123456789" # ←  actual AWS Account ID
 }
 
 #  Default vpc and the data block is for Fetching default vpc
